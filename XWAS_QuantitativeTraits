@@ -1,0 +1,116 @@
+#!/usr/bin/env Rscript
+
+library(data.table)
+library(survival)
+pheno = fread("/medpop/esp2/mzekavat/UKBB/ukbb_PhenoFile.ALL_500k.UpdatedIncdPhenos_202020.txt")
+pheno = data.frame(pheno)
+
+samplesToRemove=pheno[which(!(pheno$Submitted_Gender == pheno$Inferred_Gender) |  pheno$Non_Consented== 1),1]
+pheno = pheno[-which(pheno[,1] %in% samplesToRemove ),]
+
+#List phenotypes:
+biomarkers = fread("/medpop/esp2/mzekavat/UKBB/normalized_quantPhenos.txt", sep="\t", header=FALSE)
+biomarkers = data.frame(biomarkers)
+biomarkers$V1 = unlist(lapply(strsplit(biomarkers$V1, "norm_"), "[",2))
+
+quant_phenos = c('BMI', 'PercBodyFat', 'SBP_adjMeds_noOutliers', 'DBP_adjMeds_noOutliers', 'PulseRate_noOutliers', 'StiffnessIndex_noOutliers','ReflectionIndex_noOutliers', "PWA_Cardiac_Output_noOutliers", "PWA_TPR_noOutliers", "LV_EjectionFraction_noOutliers", 'corrected_extracted_lvef',"LV_EndSystolicVolume_noOutliers", "LV_EndDiastolicVolume_noOutliers")
+fevs = c("fev1_noOutliers","fvc_noOutliers", "fev1_fvc_ratio")
+liverMRI = c("LiverMRI_Inflammation_NoOutlierBySex", "LiverMRI_Fat_NoOutlierBySex", "LiverMRI_Iron_NoOutlierBySex")
+
+pheno_list2 = c(biomarkers$V1, quant_phenos, fevs, liverMRI)
+pheno_list2 = pheno_list2[-which(pheno_list2 %in% c('Nucleated.red.blood.cell.count_NoOutlierBySex' ,'Nucleated.red.blood.cell.percentage_NoOutlierBySex'))]
+pheno_list2 = pheno_list2[which(pheno_list2 %in% colnames(pheno) )]
+
+CHIP_Names = pheno_list2
+
+vars = c(CHIP_Names)
+summaryDF = data.frame()
+for (i in 1:length(pheno_list2)){
+	print(pheno_list2[i])
+for (j in 1:length(vars)){
+	tmp = pheno
+	print(vars[j])
+	#if(vars[j] %in%CHIP_Names){tmp = pheno}
+	#if(vars[j] %in%c(CHUD_Names, CHUD_Normalized_Names)){tmp = pheno[-which(pheno$hasCHIP ==1),]}
+indx = which(colnames(tmp) == vars[j])[1]
+dxcol = which(colnames(tmp) == paste(pheno_list2[i],sep=""))
+
+if (length(which(!is.na(tmp[,dxcol])  &!is.na(tmp[,indx]) & !is.na(tmp$age) & !is.na(tmp$Race)  & !is.na(tmp$ever_smoked))) > 5){
+
+#running survival anal
+
+df = as.data.frame(t(as.data.frame(summary( glm(scale(tmp[,dxcol]) ~ scale(tmp[,indx])+age +age2 + Sex_numeric+SmokingStatusv2 +Race, data = tmp))$coeff[2,])))
+df$y = pheno_list2[i]
+df$x = vars[j]
+df$N = length(which(!is.na(tmp[,dxcol])  &  !is.na(tmp[,indx]) & !is.na(tmp$age) & !is.na(tmp$PC1)  & !is.na(tmp$ever_smoked)))
+
+summaryDF = rbind(summaryDF, df)
+}
+}
+}
+
+pheno$Spherical_Equivalent_Right = pheno$Spherical.power..right. + 0.5*pheno$Cylindrical.power..right.
+pheno$Spherical_Equivalent_Left = pheno$Spherical.power..left. + 0.5*pheno$Cylindrical.power..left.
+
+
+leftEyePhenos=c("Visual.acutiy.logMAR..final..left.","Spherical_Equivalent_Left","Corneal.hysteresis..left.","Intra.ocular.pressure..corneal.compensated..left.","Intra.ocular.pressure..Goldmann.correlated..left.")
+leftCHIP_Names = c('LeftEye_maxFD_Inst0_NoOutliers','LeftEye_Segmentation_Area_NoOutliers')
+
+rightEyePhenos = c("Visual.acutiy.logMAR..final..right." ,"Spherical_Equivalent_Right" ,"Corneal.hysteresis..right.","Intra.ocular.pressure..corneal.compensated..right." ,"Intra.ocular.pressure..Goldmann.correlated..right." )                  
+rightCHIP_Names = c('RightEye_maxFD_Inst0_NoOutliers','RightEye_Segmentation_Area_NoOutliers')
+
+pheno_list2=leftEyePhenos
+vars = c(leftCHIP_Names)
+for (i in 1:length(pheno_list2)){
+	print(pheno_list2[i])
+for (j in 1:length(vars)){
+	tmp = pheno
+	print(vars[j])
+	#if(vars[j] %in%CHIP_Names){tmp = pheno}
+	#if(vars[j] %in%c(CHUD_Names, CHUD_Normalized_Names)){tmp = pheno[-which(pheno$hasCHIP ==1),]}
+indx = which(colnames(tmp) == vars[j])[1]
+dxcol = which(colnames(tmp) == paste(pheno_list2[i],sep=""))
+
+if (length(which(!is.na(tmp[,dxcol])  &!is.na(tmp[,indx]) & !is.na(tmp$age) & !is.na(tmp$Race)  & !is.na(tmp$ever_smoked))) > 5){
+
+#running survival anal
+
+df = as.data.frame(t(as.data.frame(summary( glm(scale(tmp[,dxcol]) ~ scale(tmp[,indx])+age +age2 + Sex_numeric+SmokingStatusv2 +Race, data = tmp))$coeff[2,])))
+df$y = pheno_list2[i]
+df$x = vars[j]
+df$N = length(which(!is.na(tmp[,dxcol])  &  !is.na(tmp[,indx]) & !is.na(tmp$age) & !is.na(tmp$PC1)  & !is.na(tmp$ever_smoked)))
+
+summaryDF = rbind(summaryDF, df)
+}
+}
+}
+
+
+pheno_list2=rightEyePhenos
+vars = c(rightCHIP_Names)
+for (i in 1:length(pheno_list2)){
+	print(pheno_list2[i])
+for (j in 1:length(vars)){
+	tmp = pheno
+	print(vars[j])
+	#if(vars[j] %in%CHIP_Names){tmp = pheno}
+	#if(vars[j] %in%c(CHUD_Names, CHUD_Normalized_Names)){tmp = pheno[-which(pheno$hasCHIP ==1),]}
+indx = which(colnames(tmp) == vars[j])[1]
+dxcol = which(colnames(tmp) == paste(pheno_list2[i],sep=""))
+
+if (length(which(!is.na(tmp[,dxcol])  &!is.na(tmp[,indx]) & !is.na(tmp$age) & !is.na(tmp$Race)  & !is.na(tmp$ever_smoked))) > 5){
+
+#running survival anal
+
+df = as.data.frame(t(as.data.frame(summary( glm(scale(tmp[,dxcol]) ~ scale(tmp[,indx])+age +age2 + Sex_numeric+SmokingStatusv2 +Race, data = tmp))$coeff[2,])))
+df$y = pheno_list2[i]
+df$x = vars[j]
+df$N = length(which(!is.na(tmp[,dxcol])  &  !is.na(tmp[,indx]) & !is.na(tmp$age) & !is.na(tmp$PC1)  & !is.na(tmp$ever_smoked)))
+
+summaryDF = rbind(summaryDF, df)
+}
+}
+}
+write.table(summaryDF,"/medpop/esp2/mzekavat/UKBB/retinal_OCT/OCT_Phewas.LinReg.txt",
+col.names = T, row.names = F, quote = F, sep = "\t")
+
