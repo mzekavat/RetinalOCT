@@ -1,0 +1,111 @@
+### Run the line below to activate hail on terminal via: 
+conda activate hail
+
+### sample code for making a Hail cluster and open up a jupyter notebook to run Hail interactively: 
+hailctl dataproc start mz03 --master-machine-type n1-highmem-16 --worker-machine-type n1-highmem-16 --worker-boot-disk-size 200 --num-workers 60 --num-preemptible-workers 0 --master-boot-disk-size 100 --region us-east1 --zone us-east1-d --requester-pays-allow-all --vep GRCh37 --properties "spark:spark.driver.memory=90G,spark:spark.driver.maxResultSize=50G,spark:spark.kryoserializer.buffer.max=1G,spark:spark.task.maxFailures=20,spark:spark.driver.extraJavaOptions=-Xss4M,spark:spark.executor.extraJavaOptions=-Xss4M,spark:spark.speculation=true"
+hailctl dataproc connect mz03 notebook --zone us-east1-d --region us-east1
+
+### Step 1: annotating UKBB variants with VEP
+import hail as hl
+from pprint import pprint
+from bokeh.io import output_notebook,show,save
+from bokeh.layouts import gridplot
+from bokeh.models import Span
+import hail.expr.aggregators as agg
+from bokeh.plotting import figure, output_file
+import numpy as np
+​
+from bokeh.io import show, output_notebook
+from bokeh.layouts import gridplot
+output_notebook()
+​
+hl.init(default_reference='GRCh37')
+​
+## Variant level annotations (VEP annotations; annotated separately)
+mt5 = hl.read_table('gs://ukbb_v2/projects/mzekavat/ukbb_v3.AllAutosomalANDchrX.annotations.ht')
+## UKBB imputed bgens:
+ds = hl.import_bgen('gs://fc-7d5088b4-7673-45b5-95c2-17ae00a04183/imputed/ukb_imp_chr{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22}_v3.bgen',entry_fields = ['GT'],sample_file='gs://ukbb_v2/data/ukb7089_imp_chr3_v3_s487395.sample')
+## Phenotype file
+phenos = hl.import_table('gs://ukbb_v2/projects/mzekavat/Retina/GWAS/OCTlayer_phenos_forGWAS.tsv.bgz',key = 'id',types={'id':hl.tstr},impute=True)
+
+ds = ds.annotate_rows(**mt5.index(ds.row_key))
+ds = ds.annotate_cols(pheno = phenos[ds.col_key])
+ds = ds.annotate_cols(array = hl.if_else((ds.pheno.genotyping_array == "UKBB"), 1, 0))
+ds = ds.filter_cols(hl.is_defined(ds.pheno.age), keep=True)
+ds = ds.filter_cols((ds.pheno.Second_deg_relOrHigher_toRemove ==1) & (hl.is_defined(ds.pheno.Second_deg_relOrHigher_toRemove)), keep=False)
+
+### variant qc 
+mt = hl.variant_qc(ds,name='variant_qc')
+mt = mt.filter_rows( ((mt.variant_qc.AF[1] > 0.001) & (mt.variant_qc.AF[1] < 1) & (mt.info>0.4) & (mt.variant_qc.p_value_hwe >= 0.0000000001)),keep = True )
+final= mt.annotate_rows(AF = mt.variant_qc.AF[1],AC = mt.variant_qc.AC[1],AN = mt.variant_qc.AN)
+#final_annot = final.annotate_rows(HWE = final.variant_qc.p_value_hwe, callRate = final.variant_qc.call_rate)
+#final_annot = final_annot.drop('variant_qc').rows()
+### gwas logistic regression wald
+gwas = hl.linear_regression_rows(y=[final.pheno.norm_GCC_mean_overall, final.pheno.norm_RNFL_mean_overall,final.pheno.norm_GCL_mean_overall,final.pheno.norm_IPL_mean_overall,final.pheno.norm_INL_mean_overall,final.pheno.norm_OPL_mean_overall,final.pheno.norm_ISOS_mean_overall,final.pheno.norm_PS_mean_overall,final.pheno.norm_RPE_mean_overall,final.pheno.norm_CSI_mean_overall,final.pheno.norm_ISOS_plus_PS_mean_overall],\
+									x=final.GT.n_alt_alleles(),\
+									covariates=[1, final.pheno.norm_SphericalEquivalent_noOutliers,final.pheno.age,final.pheno.age2, final.pheno.Sex_numeric, final.pheno.ever_smoked, final.pheno.PC1,final.pheno.PC2,final.pheno.PC3,final.pheno.PC4,final.pheno.PC5,final.pheno.PC6,final.pheno.PC7,final.pheno.PC8,final.pheno.PC9,final.pheno.PC10,final.array],
+									pass_through=['rsid','Gene','Consequence','clin_sig', 'metasvm','LOF_LOFTEE','PolyPhen','SIFT','hgvsp','AF', 'AC', 'AN','info'])
+​
+### Writting out the annotated GWAS results:
+gwas.write('gs://ukbb_v2/projects/mzekavat/Retina/GWAS/RetinalOCTlayers_all.adjSE.ht')
+
+
+gwas = hl.read_table('gs://ukbb_v2/projects/mzekavat/Retina/GWAS/RetinalOCTlayers_all.adjSE.ht')
+
+gwas=gwas.annotate(pheno = ['GCC', 'RNFL','GCL','IPL','INL','OPL','ISOS','PS','RPE','CSI','ISOS+PS'])
+beta	standard_error	t_stat	p_value	pheno
+gwas=gwas.filter(gwas.AF>0.999, keep=False)
+
+
+gwasv2 = gwas.transmute(stats = hl.zip(gwas.pheno,gwas.beta, gwas.standard_error, gwas.t_stat, gwas.p_value, gwas.y_transpose_x))
+gwasv2 = gwasv2.explode('stats')
+gwasv2 = gwasv2.transmute(pheno=gwasv2.stats[0], beta=gwasv2.stats[1], se=gwasv2.stats[2], t_stat=gwasv2.stats[3], p_value=gwasv2.stats[4], y_transpose_x=gwasv2.stats[5])
+gwasv2.flatten().export('gs://ukbb_v2/projects/mzekavat/Retina/GWAS/RetinalOCTlayers_all.tsv.adjSE.bgz')
+
+
+gwasv2.drop('locus', 'alleles', 'clin_sig', 'PolyPhen', 'SIFT', 'hgvsp', 'AC', 'AN', 'info', 'n', 'sum_x', 'y_transpose_x').flatten().export('gs://ukbb_v2/projects/mzekavat/Retina/GWAS/RetinalOCTlayers_all.tsv.v2.fewerCols.adjSE.bgz')
+
+p = hl.plot.manhattan(gwasv2.filter(gwasv2.pheno == 'GCC').p_value, title='GCC')
+show(p)
+
+p = hl.plot.manhattan(gwasv2.filter(gwasv2.pheno == 'RNFL').p_value, title='RNFL')
+show(p)
+
+
+p = hl.plot.manhattan(gwasv2.filter(gwasv2.pheno == 'GCL').p_value, title='GCL')
+show(p)
+
+
+p = hl.plot.manhattan(gwasv2.filter(gwasv2.pheno == 'IPL').p_value, title='IPL')
+show(p)
+
+
+p = hl.plot.manhattan(gwasv2.filter(gwasv2.pheno == 'INL').p_value, title='INL')
+show(p)
+
+
+p = hl.plot.manhattan(gwasv2.filter(gwasv2.pheno == 'OPL').p_value, title='OPL+ONL')
+show(p)
+
+
+p = hl.plot.manhattan(gwasv2.filter(gwasv2.pheno == 'ISOS+PS').p_value, title='PS')
+show(p)
+
+
+p = hl.plot.manhattan(gwasv2.filter(gwasv2.pheno == 'RPE').p_value, title='RPE+BM')
+show(p)
+
+
+p = hl.plot.manhattan(gwasv2.filter(gwasv2.pheno == 'CSI').p_value, title='CSI')
+show(p)
+
+
+p = hl.plot.qq(gwasv2.p_value, label=gwasv2.pheno)
+show(p)
+
+gwas_v3 = gwasv2.filter(gwasv2.p_value<0.0001, keep=True)
+gwas_v3.flatten().export('gs://ukbb_v2/projects/mzekavat/Retina/GWAS/RetinalOCTlayers_p0001.adjSE.tsv.bgz')
+
+
+gwas_v3 = gwasv2.filter(gwasv2.p_value<0.00000005, keep=True)
+gwas_v3.flatten().export('gs://ukbb_v2/projects/mzekavat/Retina/GWAS/RetinalOCTlayers_p5e8.adjSE.tsv.bgz')
