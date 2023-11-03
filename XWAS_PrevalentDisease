@@ -1,0 +1,84 @@
+args <- commandArgs(TRUE)
+
+if(length(args) < 1) {
+  args <- c("--help")
+}
+
+if("--help" %in% args) {
+  cat("
+      The R Script
+      
+      Arguments:
+      --phenCategory=characters; start column 
+      --help                - print this text
+      ")
+        q(save="no")
+}
+
+parseArgs <- function(x) strsplit(sub("^--", "", x), "=")
+argsDF <- as.data.frame(do.call("rbind", parseArgs(args)))
+argsL <- as.list(as.character(argsDF$V2))
+names(argsL) <- argsDF$V1
+
+phenCategory <- as.character(argsL$phenCategory)
+
+print("phenCategory")
+print(phenCategory)
+
+library(data.table)
+library(survival)
+
+pheno = fread("/medpop/esp2/mzekavat/UKBB/ukbb_PhenoFile.ALL_500k.UpdatedIncdPhenos_202020.txt")
+pheno = data.frame(pheno)
+
+samplesToRemove=pheno[which(!(pheno$Submitted_Gender == pheno$Inferred_Gender) |  pheno$Non_Consented== 1),1]
+pheno = pheno[-which(pheno[,1] %in% samplesToRemove ),]
+#pheno$cataract_or_retinalDetachment_toRemove = ifelse(pheno$Cataract_ANY ==1 | pheno$Corneal_opacity_and_other_disorders_of_cornea_ANY ==1 | pheno$Retinal_detachments_and_defects_ANY ==1 | pheno$Retinal_detachment_with_retinal_defect_ANY == 1 | pheno$Nonsenile_Cataract_ANY ==1 | pheno$Cataract ==1 , 1, 0)
+#    0     1 
+#68109  8710
+#pheno$Prev_cataract_or_retinalDetachment_toRemove = ifelse(pheno$Cataract_PREV ==1 | pheno$Corneal_opacity_and_other_disorders_of_cornea_PREV ==1 | pheno$Retinal_detachments_and_defects_PREV ==1 | pheno$Retinal_detachment_with_retinal_defect_PREV == 1 | pheno$Nonsenile_Cataract_PREV ==1 | pheno$Prev_Cataract ==1 , 1, 0)
+#    0     1 
+#72972  3847
+#pheno = pheno[-which(pheno$cataract_or_retinalDetachment_toRemove ==1 ),]
+pheno$ISOSplusPS_mean_overall =rowSums(data.frame(ISOS=pheno$ISOS_mean_overall, PS=pheno$PS_mean_overall), na.rm=FALSE)
+
+pheno = pheno[, names(pheno) %in% c('id', 'Spherical.equivalent_NoOutliers','StandingHeight_FINAL','Weight_FINAL','Sex',"GCC_mean_overall", "RNFL_mean_overall","GCL_mean_overall","IPL_mean_overall", "INL_mean_overall" ,"OPL_mean_overall","ISOS_mean_overall","PS_mean_overall","ISOSplusPS_mean_overall","RPE_mean_overall" ,"CSI_mean_overall",'age', 'age2', 'Sex_numeric', 'ever_smoked', 'Race', 'Cataract')]
+#"GCC_mean_sup" , "RNFL_mean_sup","GCL_mean_sup", "IPL_mean_sup","INL_mean_sup","OPL_mean_sup","ISOS_mean_sup","PS_mean_sup","RPE_mean_sup","CSI_mean_sup","GCC_mean_inf","RNFL_mean_inf","GCL_mean_inf","IPL_mean_inf","INL_mean_inf","OPL_mean_inf","ISOS_mean_inf","PS_mean_inf","RPE_mean_inf","CSI_mean_inf",
+phecodes = fread(paste("/medpop/esp2/mzekavat/UKBB/PhenoFiles/PheCODEs_new/2021-01-08_ukb_phecode_", phenCategory, "_March2020fu.csv", sep=""), sep=",")
+phecodes = data.frame(phecodes)
+
+pheno_list = unique(colnames(phecodes)[grep("_ANY", colnames(phecodes))])
+
+pheno_list2 = unlist(lapply(strsplit(pheno_list, "_ANY"), "[",1))
+
+pheno=merge(pheno, phecodes, by=c(1), all.x=TRUE)
+
+Mosaic_Names = c("GCC_mean_overall", "RNFL_mean_overall","GCL_mean_overall","IPL_mean_overall", "INL_mean_overall" ,"OPL_mean_overall","ISOSplusPS_mean_overall","RPE_mean_overall" ,"CSI_mean_overall")
+#"GCC_mean_sup" , "RNFL_mean_sup","GCL_mean_sup", "IPL_mean_sup","INL_mean_sup","OPL_mean_sup","ISOS_mean_sup","PS_mean_sup","RPE_mean_sup","CSI_mean_sup","GCC_mean_inf","RNFL_mean_inf","GCL_mean_inf","IPL_mean_inf","INL_mean_inf","OPL_mean_inf","ISOS_mean_inf","PS_mean_inf","RPE_mean_inf","CSI_mean_inf"
+vars = Mosaic_Names
+summaryDF = data.frame()
+tmp=pheno
+for (i in 1:length(pheno_list2)){
+	print(pheno_list2[i])
+
+#removing prevalent cases
+preval_col = which(colnames(tmp) == paste(pheno_list2[i],"_PREV",sep=""))
+for (j in 1:length(vars)){
+	print(vars[j])
+	indx = which(colnames(tmp) == vars[j])[1]
+
+if (length(which(tmp[,preval_col] ==1  &!is.na(tmp[,indx])& !is.na(tmp$age) & !is.na(tmp$Race)  & !is.na(tmp$ever_smoked)& !is.na(tmp$StandingHeight_FINAL) & !is.na(tmp$Weight_FINAL) )) > 9){
+print('analyzing')
+df = as.data.frame(t(as.data.frame(summary( glm(scale(tmp[,indx])~tmp[,preval_col] +age +age2 + Sex_numeric+ever_smoked +Race+ scale(StandingHeight_FINAL) + scale(Weight_FINAL) + scale(Spherical.equivalent_NoOutliers), data = tmp))$coeff[2,])))
+df$y = pheno_list2[i]
+df$x = vars[j]
+df$N_Cases = length(which(tmp[,preval_col] == 1 & !is.na(tmp[,indx])& !is.na(tmp$age) & !is.na(tmp$Race)   & !is.na(tmp$ever_smoked) & !is.na(tmp$StandingHeight_FINAL) & !is.na(tmp$Weight_FINAL) & !is.na(tmp$Spherical.equivalent_NoOutliers)))
+df$N_Controls = length(which(tmp[,preval_col] == 0 & !is.na(tmp[,indx])& !is.na(tmp$age) & !is.na(tmp$Race)   & !is.na(tmp$ever_smoked) & !is.na(tmp$StandingHeight_FINAL) & !is.na(tmp$Weight_FINAL) & !is.na(tmp$Spherical.equivalent_NoOutliers)))
+print(df)
+summaryDF = rbind(summaryDF, df)
+}
+}
+}
+print('Done writing table')
+write.table(summaryDF,paste("/medpop/esp2/mzekavat/UKBB/retinal_OCT/OCT_Layers/results/v2_PrevDisease.",phenCategory ,".txt", sep=""),
+col.names = T, row.names = F, quote = F, sep = "\t")
